@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 
 type CrmLead = {
@@ -17,13 +17,58 @@ type CrmLead = {
   } | null;
 };
 
+type Feedback = {
+  type: 'success' | 'error';
+  text: string;
+};
+
+const STATUS_OPTIONS = [
+  { value: 'novo', label: 'Novo' },
+  { value: 'em_contato', label: 'Em contato' },
+  { value: 'interessado', label: 'Interessado' },
+  { value: 'sem_interesse', label: 'Sem interesse' },
+  { value: 'fechado', label: 'Fechado' }
+];
+
+function getStatusLabel(status: string) {
+  return (
+    STATUS_OPTIONS.find((option) => option.value === status)?.label || status
+  );
+}
+
+function normalizeSearch(value: string | null | undefined) {
+  return (value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function formatCnpj(cnpj: string | null | undefined) {
+  const digits = (cnpj || '').replace(/\D/g, '');
+
+  if (digits.length !== 14) {
+    return cnpj || 'Não informado';
+  }
+
+  return digits.replace(
+    /^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/,
+    '$1.$2.$3/$4-$5'
+  );
+}
+
 export default function CrmPage() {
   const [leads, setLeads] = useState<CrmLead[]>([]);
   const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState('');
+  const [updatingId, setUpdatingId] = useState<number | null>(null);
+  const [removingId, setRemovingId] = useState<number | null>(null);
+
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('todos');
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
 
   async function loadLeads() {
     setLoading(true);
+    setFeedback(null);
 
     const { data, error } = await supabase
       .from('crm_leads')
@@ -45,7 +90,10 @@ export default function CrmPage() {
       .order('created_at', { ascending: false });
 
     if (error) {
-      setMessage(error.message);
+      setFeedback({
+        type: 'error',
+        text: error.message
+      });
     } else {
       setLeads((data as unknown as CrmLead[]) || []);
     }
@@ -54,6 +102,17 @@ export default function CrmPage() {
   }
 
   async function updateStatus(id: number, status: string) {
+    setUpdatingId(id);
+    setFeedback(null);
+
+    const previousLeads = [...leads];
+
+    setLeads((currentLeads) =>
+      currentLeads.map((lead) =>
+        lead.id === id ? { ...lead, status } : lead
+      )
+    );
+
     const { error } = await supabase
       .from('crm_leads')
       .update({
@@ -63,104 +122,377 @@ export default function CrmPage() {
       .eq('id', id);
 
     if (error) {
-      setMessage(error.message);
-      return;
+      setLeads(previousLeads);
+
+      setFeedback({
+        type: 'error',
+        text: error.message
+      });
+    } else {
+      setFeedback({
+        type: 'success',
+        text: 'Status atualizado com sucesso.'
+      });
     }
 
-    await loadLeads();
+    setUpdatingId(null);
   }
 
   async function removeLead(id: number) {
+    const confirmed = window.confirm(
+      'Deseja realmente remover este lead do CRM?'
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setRemovingId(id);
+    setFeedback(null);
+
     const { error } = await supabase
       .from('crm_leads')
       .delete()
       .eq('id', id);
 
     if (error) {
-      setMessage(error.message);
+      setFeedback({
+        type: 'error',
+        text: error.message
+      });
+
+      setRemovingId(null);
       return;
     }
 
-    await loadLeads();
+    setLeads((currentLeads) =>
+      currentLeads.filter((lead) => lead.id !== id)
+    );
+
+    setFeedback({
+      type: 'success',
+      text: 'Lead removido do CRM.'
+    });
+
+    setRemovingId(null);
   }
 
   useEffect(() => {
     loadLeads();
   }, []);
 
+  const filteredLeads = useMemo(() => {
+    const normalizedSearch = normalizeSearch(search);
+
+    return leads.filter((lead) => {
+      const company = lead.companies;
+
+      const matchesStatus =
+        statusFilter === 'todos' || lead.status === statusFilter;
+
+      const searchableContent = [
+        company?.razao_social,
+        company?.nome_fantasia,
+        company?.cnpj,
+        company?.cidade,
+        company?.uf,
+        company?.telefone,
+        company?.email
+      ]
+        .map(normalizeSearch)
+        .join(' ');
+
+      const matchesSearch =
+        !normalizedSearch ||
+        searchableContent.includes(normalizedSearch);
+
+      return matchesStatus && matchesSearch;
+    });
+  }, [leads, search, statusFilter]);
+
+  const metrics = useMemo(() => {
+    return {
+      total: leads.length,
+      novos: leads.filter((lead) => lead.status === 'novo').length,
+      contato: leads.filter((lead) => lead.status === 'em_contato').length,
+      interessados: leads.filter((lead) => lead.status === 'interessado').length,
+      fechados: leads.filter((lead) => lead.status === 'fechado').length
+    };
+  }, [leads]);
+
   return (
-    <>
-      <h1>Mini CRM</h1>
+    <section className="modern-crm-page">
+      <header className="modern-page-header">
+        <div>
+          <span className="modern-page-eyebrow">Gestão comercial</span>
 
-      <div className="card">
-        <h2>Leads salvos</h2>
+          <h1>Pipeline Comercial</h1>
 
-        {message && <p className="message">{message}</p>}
+          <p>
+            Organize seus leads, acompanhe os contatos e identifique as melhores
+            oportunidades.
+          </p>
+        </div>
 
-        {loading ? (
-          <p>Carregando...</p>
-        ) : (
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>Empresa</th>
-                  <th>CNPJ</th>
-                  <th>Local</th>
-                  <th>Contato</th>
-                  <th>Status</th>
-                  <th>Criado em</th>
-                  <th>Ação</th>
-                </tr>
-              </thead>
+        <button
+          type="button"
+          className="modern-refresh-button"
+          onClick={loadLeads}
+          disabled={loading}
+        >
+          {loading ? 'Atualizando...' : '↻ Atualizar'}
+        </button>
+      </header>
 
-              <tbody>
-                {leads.map((lead) => (
-                  <tr key={lead.id}>
-                    <td>
-                      {lead.companies?.razao_social ||
-                        lead.companies?.nome_fantasia ||
-                        'Empresa sem nome'}
-                    </td>
-                    <td>{lead.companies?.cnpj}</td>
-                    <td>
-                      {lead.companies?.cidade}/{lead.companies?.uf}
-                    </td>
-                    <td>
-                      {lead.companies?.telefone && <span className="badge">{lead.companies.telefone}</span>}
-                      {lead.companies?.email && <span className="badge">{lead.companies.email}</span>}
-                    </td>
-                    <td>
-                      <select
-                        value={lead.status}
-                        onChange={(event) => updateStatus(lead.id, event.target.value)}
-                      >
-                        <option value="novo">Novo</option>
-                        <option value="em_contato">Em contato</option>
-                        <option value="interessado">Interessado</option>
-                        <option value="sem_interesse">Sem interesse</option>
-                        <option value="fechado">Fechado</option>
-                      </select>
-                    </td>
-                    <td>{new Date(lead.created_at).toLocaleString('pt-BR')}</td>
-                    <td>
-                      <button className="btn btn-danger" type="button" onClick={() => removeLead(lead.id)}>
-                        Remover
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+      <div className="modern-metrics-grid">
+        <article className="modern-metric-card">
+          <span className="modern-metric-icon modern-metric-purple">◎</span>
 
-                {leads.length === 0 && (
-                  <tr>
-                    <td colSpan={7}>Nenhum lead salvo no CRM.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+          <div>
+            <span>Total de leads</span>
+            <strong>{metrics.total}</strong>
           </div>
-        )}
+        </article>
+
+        <article className="modern-metric-card">
+          <span className="modern-metric-icon modern-metric-blue">＋</span>
+
+          <div>
+            <span>Novos</span>
+            <strong>{metrics.novos}</strong>
+          </div>
+        </article>
+
+        <article className="modern-metric-card">
+          <span className="modern-metric-icon modern-metric-yellow">☎</span>
+
+          <div>
+            <span>Em contato</span>
+            <strong>{metrics.contato}</strong>
+          </div>
+        </article>
+
+        <article className="modern-metric-card">
+          <span className="modern-metric-icon modern-metric-green">★</span>
+
+          <div>
+            <span>Interessados</span>
+            <strong>{metrics.interessados}</strong>
+          </div>
+        </article>
+
+        <article className="modern-metric-card">
+          <span className="modern-metric-icon modern-metric-dark">✓</span>
+
+          <div>
+            <span>Fechados</span>
+            <strong>{metrics.fechados}</strong>
+          </div>
+        </article>
       </div>
-    </>
+
+      <div className="modern-crm-toolbar">
+        <div className="modern-crm-search">
+          <span aria-hidden="true">⌕</span>
+
+          <input
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Buscar empresa, CNPJ, cidade, telefone ou e-mail..."
+          />
+        </div>
+
+        <div className="modern-crm-filter">
+          <label htmlFor="status-filter">Status</label>
+
+          <select
+            id="status-filter"
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+          >
+            <option value="todos">Todos os status</option>
+
+            {STATUS_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {feedback && (
+        <div
+          className={`modern-feedback modern-feedback-${feedback.type}`}
+          role="alert"
+        >
+          {feedback.text}
+        </div>
+      )}
+
+      <div className="modern-results-header">
+        <div>
+          <h2>Leads salvos</h2>
+
+          <p>
+            {filteredLeads.length}{' '}
+            {filteredLeads.length === 1 ? 'resultado encontrado' : 'resultados encontrados'}
+          </p>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="modern-crm-grid">
+          {[1, 2, 3].map((item) => (
+            <div className="modern-crm-card modern-skeleton-card" key={item}>
+              <div className="modern-skeleton modern-skeleton-title" />
+              <div className="modern-skeleton modern-skeleton-line" />
+              <div className="modern-skeleton modern-skeleton-line" />
+              <div className="modern-skeleton modern-skeleton-button" />
+            </div>
+          ))}
+        </div>
+      ) : filteredLeads.length === 0 ? (
+        <div className="modern-empty-state">
+          <div className="modern-empty-icon">⌕</div>
+
+          <h3>Nenhum lead encontrado</h3>
+
+          <p>
+            Altere os filtros ou adicione novos leads ao CRM pela tela de geração.
+          </p>
+        </div>
+      ) : (
+        <div className="modern-crm-grid">
+          {filteredLeads.map((lead) => {
+            const company = lead.companies;
+
+            const companyName =
+              company?.razao_social ||
+              company?.nome_fantasia ||
+              'Empresa sem nome';
+
+            const companyInitial = companyName
+              .trim()
+              .charAt(0)
+              .toUpperCase();
+
+            const phoneLink = company?.telefone
+              ? company.telefone.replace(/\D/g, '')
+              : '';
+
+            return (
+              <article className="modern-crm-card" key={lead.id}>
+                <div className="modern-crm-card-top">
+                  <div className="modern-company-avatar">
+                    {companyInitial || 'E'}
+                  </div>
+
+                  <div className="modern-company-title">
+                    <h3>{companyName}</h3>
+
+                    {company?.nome_fantasia &&
+                      company.nome_fantasia !== companyName && (
+                        <span>{company.nome_fantasia}</span>
+                      )}
+                  </div>
+
+                  <span
+                    className={`modern-status-badge status-${lead.status}`}
+                  >
+                    {getStatusLabel(lead.status)}
+                  </span>
+                </div>
+
+                <div className="modern-company-details">
+                  <div>
+                    <span>CNPJ</span>
+                    <strong>{formatCnpj(company?.cnpj)}</strong>
+                  </div>
+
+                  <div>
+                    <span>Localização</span>
+                    <strong>
+                      {[company?.cidade, company?.uf]
+                        .filter(Boolean)
+                        .join(' / ') || 'Não informado'}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <span>Adicionado em</span>
+                    <strong>
+                      {new Date(lead.created_at).toLocaleDateString('pt-BR')}
+                    </strong>
+                  </div>
+                </div>
+
+                <div className="modern-contact-list">
+                  {company?.telefone ? (
+                    <a href={`tel:${phoneLink}`}>
+                      <span>☎</span>
+                      {company.telefone}
+                    </a>
+                  ) : (
+                    <span className="modern-contact-empty">
+                      Telefone não informado
+                    </span>
+                  )}
+
+                  {company?.email ? (
+                    <a href={`mailto:${company.email}`}>
+                      <span>✉</span>
+                      {company.email}
+                    </a>
+                  ) : (
+                    <span className="modern-contact-empty">
+                      E-mail não informado
+                    </span>
+                  )}
+                </div>
+
+                {lead.notes && (
+                  <div className="modern-notes-box">
+                    <span>Observações</span>
+                    <p>{lead.notes}</p>
+                  </div>
+                )}
+
+                <div className="modern-crm-card-actions">
+                  <div className="modern-status-select">
+                    <label htmlFor={`status-${lead.id}`}>Alterar status</label>
+
+                    <select
+                      id={`status-${lead.id}`}
+                      value={lead.status}
+                      disabled={updatingId === lead.id}
+                      onChange={(event) =>
+                        updateStatus(lead.id, event.target.value)
+                      }
+                    >
+                      {STATUS_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="modern-remove-button"
+                    disabled={removingId === lead.id}
+                    onClick={() => removeLead(lead.id)}
+                  >
+                    {removingId === lead.id ? 'Removendo...' : 'Remover'}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }

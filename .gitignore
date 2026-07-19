@@ -16,3 +16,8 @@ apps/api/scripts/data/
 
 # Pasta duplicada/acidental
 apps/web/apps/
+
+# Backups locais
+backup-ui-*/
+backup-layout-*/
+*.bak
