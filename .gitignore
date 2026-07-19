@@ -1,0 +1,18 @@
+node_modules/
+dist/
+
+.env
+.env.*
+!.env.example
+
+apps/web/.env.local
+apps/api/.env
+
+# Arquivos importados da Receita Federal
+apps/api/scripts/data/
+*.zip
+*.ESTABELE
+*MUNICCSV
+
+# Pasta duplicada/acidental
+apps/web/apps/
