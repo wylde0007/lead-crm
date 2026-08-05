@@ -21,3 +21,4 @@ apps/web/apps/
 backup-ui-*/
 backup-layout-*/
 *.bak
+.tmp/
